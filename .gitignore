@@ -1,0 +1,28 @@
+# Personal settings and local reports
+config.toml
+config.local.toml
+codex-config.toml
+verification-*.json
+.state/
+logs/
+
+# Runtime and build outputs
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+
+# Credentials belong in the user's SSH directory
+*.pem
+*.key
+*_rsa*
+id_ed25519*
+id_rsa*
+*.p12
+*.pfx

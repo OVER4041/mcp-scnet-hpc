@@ -1,0 +1,10 @@
+# Windows example: replace paths with the actual cloned project directory.
+[mcp_servers.scnet-hpc]
+command = 'C:\projects\scnet-hpc-mcp\.venv\Scripts\python.exe'
+args = ["-X", "utf8", "-m", "scnet_mcp.server", "--config", "C:/projects/scnet-hpc-mcp/config.toml"]
+startup_timeout_sec = 20
+tool_timeout_sec = 360
+env_vars = ["USERDOMAIN", "WINDIR", "PROGRAMDATA", "COMSPEC", "TMP"]
+
+# macOS/Linux: use /absolute/path/to/scnet-hpc-mcp/.venv/bin/python,
+# and point --config at the corresponding absolute config.toml path.

@@ -1,0 +1,15 @@
+# Copy to config.toml and use your own existing SSH alias.
+# Relative local paths are resolved from this configuration file's directory.
+[server]
+local_root = "."
+state_dir = ".state"
+command_timeout = 30
+transfer_timeout = 300
+max_output_bytes = 65536
+max_transfer_bytes = 1073741824
+allow_remote_commands = false
+
+[clusters.scnet]
+ssh_host = "scnet"
+remote_root = "~"
+connect_timeout = 15
