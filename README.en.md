@@ -6,7 +6,7 @@ A local MCP server for SSH-accessible SCNet and other Slurm HPC clusters. No Cod
 
 ## Features
 
-- 13 tools for connection checks, files, and Slurm jobs
+- 16 tools for connection checks, files, and Slurm jobs
 - Reuses local OpenSSH configuration and keys
 - Strict host-key verification and noninteractive authentication
 - Binary streaming over SSH without requiring SFTP
@@ -31,13 +31,27 @@ Private configuration, keys, runtime state, verification reports, and virtual en
 
 ## Tools
 
-list_clusters, check_connection, list_files, read_file, write_file, upload_file, download_file, list_partitions, list_jobs, job_details, submission_record, submit_job, cancel_job.
+list_clusters, check_connection, list_files, read_file, write_file, upload_file, download_file, list_partitions, list_jobs, job_details, submission_record, submit_job, cancel_job, list_environments, check_environment, preview_job.
 
 Set allow_remote_commands=true to expose run_command as an additional tool.
 
 Remote paths and workdir are relative to remote_root. Local paths are relative to local_root or absolute paths within that root. File tools reject path traversal and symlinks escaping the configured roots. These checks are not a process sandbox: submitted scripts and optional raw commands have the SSH account's permissions.
 
 Heavy computation belongs in Slurm jobs. Submitting jobs consumes the cluster's compute allocation.
+
+## Software environments
+
+Configure optional profiles under [clusters.scnet.environments.NAME]. A profile contains a description, a setup array of trusted single-line shell commands, and an executables mapping whose keys match executable filenames and values are absolute remote paths. See the commented QE and EPW examples in config.example.toml.
+
+Use list_environments, check_environment, and preview_job first, then pass environment="qe" or environment="epw" to submit_job. Omitting environment preserves the original submission behavior. The optional run_command tool also accepts environment.
+
+Setup is inserted after the leading comments and all initial #SBATCH directives, before the original commands. It runs inside the batch job on the compute node. The generated script is sent through sbatch standard input, without modifying its source file. Scripts must use UTF-8 and a Bash shebang; CRLF is normalized to LF. If no job name is provided, the original filename is retained as the job name.
+
+Nounset is temporarily disabled while loading vendor environment files, then restored. Failed setup or a missing configured executable stops execution. Later module/source commands in the original script can override the selected environment; preview reports these as warnings. Prefer scripts containing only resource directives and computation commands.
+
+Profiles are trusted local configuration, not a process sandbox. Loading a setup script can perform the initialization actions defined by that script. check_environment loads the profile but never launches the configured scientific programs.
+
+The environment name and configuration participate in request deduplication. Do not reuse a request ID after changing its environment. Restart the MCP connection after configuring profiles.
 
 ## Submission deduplication
 

@@ -8,7 +8,7 @@
 
 ## 功能
 
-- 13 个工具：连接检测、文件读写及上传下载、Slurm 分区和作业管理
+- 16 个工具：连接检测、文件读写及上传下载、Slurm 分区和作业管理
 - 使用已有 SSH 配置和密钥，保留主机密钥校验
 - SSH 流式传输二进制文件，不要求网关开放 SFTP
 - 文件工具检查本机和远端根目录；默认拒绝覆盖
@@ -102,6 +102,9 @@ macOS/Linux：
 | list_partitions | 查询 Slurm 分区及节点状态 |
 | list_jobs | 查询当前账户的排队和运行作业 |
 | job_details | 查询活跃作业详情或 sacct 历史记录 |
+| list_environments | 查看可选软件环境，例如 qe、epw |
+| check_environment | 加载环境并检查程序及 MPI 路径 |
+| preview_job | 预览环境注入后的脚本，不提交计算 |
 | submission_record | 查询本机持久化的提交记录 |
 | submit_job | 提交已有脚本，支持 afterok 依赖 |
 | cancel_job | 取消当前账户拥有的指定作业 |
@@ -110,6 +113,43 @@ macOS/Linux：
 远程文件路径及 workdir 均相对于 remote_root，使用正斜杠，不使用绝对路径或 ".."。本机路径相对于 local_root，或使用位于该根目录内的绝对路径。
 
 文件工具的目录检查不是进程沙箱；提交的脚本以及启用后的 run_command 拥有 SSH 账户的访问权限。大型计算应交给 Slurm 调度，避免在登录节点执行。
+
+## 选择 QE / EPW 环境
+
+可以在每个集群下配置多个软件环境。环境配置只存在于本机 config.toml，公开仓库中的 config.example.toml 提供脱敏示例。
+
+例如：
+
+    [clusters.scnet.environments.qe]
+    description = "Quantum ESPRESSO"
+    setup = [
+        "module unload mpi/hpcx/gcc-7.3.1",
+        "module use /public/software/modules/base /opt/hpc/software/modules",
+        "source /path/to/qe/scripts/env.sh",
+    ]
+
+    [clusters.scnet.environments.qe.executables]
+    "pw.x" = "/path/to/qe/app/bin/pw.x"
+    "ph.x" = "/path/to/qe/app/bin/ph.x"
+
+EPW 可以建立名为 epw 的配置，使用相同 setup，将 executables 指向 epw.x。程序路径必须是绝对路径，键名需要与文件名一致。setup 是受信任本机配置中的单行 Shell 命令，可能执行安装包的初始化逻辑；其权限与 SSH 账户相同。
+
+使用流程：
+
+1. list_environments：查看环境名称。
+2. check_environment(environment="qe")：短 SSH 会话中加载环境，检查程序和 mpirun 路径，不运行计算程序。
+3. preview_job(script_path="calculations/run.slurm", environment="qe")：检查注入后的脚本及提示。
+4. submit_job(script_path="calculations/run.slurm", workdir="calculations", request_id="qe-run-001", environment="qe")：按选定环境提交。
+
+可以直接说：“使用 QE 环境预览并提交这份脚本”，或“使用 EPW 环境提交作业”。environment 不设置时，按原始脚本提交。
+
+初始化命令注入在全部开头注释和 #SBATCH 资源设置之后、原始计算命令之前，在计算节点执行。脚本通过 sbatch 标准输入提交，原始文件不会被改写。要求 UTF-8 Bash 脚本；Windows CRLF 会转换为 LF。脚本没有指定作业名时，保留原文件名作为作业名。
+
+环境初始化期间暂时关闭 nounset（set -u），兼容 env.sh 对未设置变量的引用，之后恢复原状态。初始化失败或配置的程序不可执行时，作业停止。
+
+如果原脚本还包含 module purge、module load 或 source，预览会提示它们可能覆盖注入环境。建议计算脚本只保留资源设置和计算命令，交给所选环境负责软件初始化。
+
+环境名称及配置内容纳入提交请求的去重检查；同一 request_id 不能切换到其他环境或修改环境后重用。新增或修改环境配置后，需要重启 MCP 连接。
 
 ## 防重复提交
 

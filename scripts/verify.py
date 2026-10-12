@@ -33,6 +33,9 @@ async def verify(live: bool, config: Path) -> dict:
             names = {tool.name for tool in tools.tools}
             assert all(tool.outputSchema is not None for tool in tools.tools)
             assert {"check_connection", "submit_job", "read_file", "upload_file", "download_file"} <= names
+            assert {"list_environments", "check_environment", "preview_job"} <= names
+            submit_tool = next(tool for tool in tools.tools if tool.name == "submit_job")
+            assert "environment" in submit_tool.inputSchema["properties"]
             assert ("run_command" in names) == settings.allow_remote_commands
             result = await session.call_tool("list_clusters", {})
             assert not result.isError

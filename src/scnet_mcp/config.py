@@ -1,5 +1,5 @@
 """Validated local configuration; credentials remain in OpenSSH."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import tomllib
@@ -10,11 +10,50 @@ class BridgeError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class EnvironmentProfile:
+    name: str
+    description: str = ""
+    setup: tuple[str, ...] = ()
+    executables: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, name: str, item: dict) -> "EnvironmentProfile":
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", name):
+            raise BridgeError("Invalid environment profile name")
+        if not isinstance(item, dict) or set(item) - {"description", "setup", "executables"}:
+            raise BridgeError(f"Invalid options for environment {name}")
+        description = item.get("description", "")
+        setup = item.get("setup", [])
+        executables = item.get("executables", {})
+        if not isinstance(description, str):
+            raise BridgeError("Environment description must be text")
+        if not isinstance(setup, list) or not all(
+            isinstance(command, str) and command.strip() and len(command) <= 8192
+            and not any(ord(char) < 32 for char in command)
+            for command in setup
+        ):
+            raise BridgeError("Environment setup must be a list of single-line shell commands")
+        if not isinstance(executables, dict):
+            raise BridgeError("Environment executables must be a mapping")
+        for executable, path in executables.items():
+            if not isinstance(executable, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,79}", executable):
+                raise BridgeError("Invalid executable name in environment profile")
+            if not isinstance(path, str) or not path.startswith("/") or ":" in path or any(ord(char) < 32 for char in path):
+                raise BridgeError("Environment executable paths must be absolute POSIX paths without control characters or colons")
+            if path.rsplit("/", 1)[-1] != executable:
+                raise BridgeError("Executable mapping keys must match the executable filename")
+        if not setup and not executables:
+            raise BridgeError("An environment needs setup commands or executables")
+        return cls(name, description, tuple(setup), dict(executables))
+
+
+@dataclass(frozen=True)
 class Cluster:
     name: str
     ssh_host: str
     remote_root: str = "~"
     connect_timeout: int = 15
+    environments: dict[str, EnvironmentProfile] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -56,7 +95,7 @@ class Settings:
         for name, item in data.get("clusters", {}).items():
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", name):
                 raise BridgeError(f"Invalid cluster name: {name!r}")
-            if set(item) - {"ssh_host", "remote_root", "connect_timeout"}:
+            if set(item) - {"ssh_host", "remote_root", "connect_timeout", "environments"}:
                 raise BridgeError(f"Unknown options for cluster {name}")
             host = item.get("ssh_host", "")
             if not isinstance(host, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,253}", host):
@@ -69,7 +108,14 @@ class Settings:
             timeout = item.get("connect_timeout", 15)
             if type(timeout) is not int or not 1 <= timeout <= 120:
                 raise BridgeError("connect_timeout must be an integer from 1 to 120")
-            clusters[name] = Cluster(name, host, remote_root, timeout)
+            raw_environments = item.get("environments", {})
+            if not isinstance(raw_environments, dict):
+                raise BridgeError("Cluster environments must be a mapping")
+            environments = {
+                environment_name: EnvironmentProfile.load(environment_name, profile)
+                for environment_name, profile in raw_environments.items()
+            }
+            clusters[name] = Cluster(name, host, remote_root, timeout, environments)
         if not clusters:
             raise BridgeError("Configure at least one [clusters.NAME] entry")
         kwargs = {}

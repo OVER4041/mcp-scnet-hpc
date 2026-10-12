@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from .config import BridgeError, Cluster, Settings
 from .transport import SSH, Result
+from .environments import render_job, setup_shell
 
 
 def quote(value: str) -> str:
@@ -257,6 +258,49 @@ class Bridge:
             "truncated": accounting.truncated, "stderr": accounting.stderr,
         }
 
+    def environment(self, name: str, cluster: str = "scnet"):
+        try:
+            return self.cluster(cluster).environments[name]
+        except KeyError as exc:
+            raise BridgeError(f"Unknown environment {name!r}; call list_environments") from exc
+
+    def list_environments(self, cluster: str = "scnet") -> dict:
+        return {
+            "cluster": cluster,
+            "environments": [
+                {"name": profile.name, "description": profile.description,
+                 "executables": profile.executables}
+                for profile in self.cluster(cluster).environments.values()
+            ],
+        }
+
+    async def check_environment(self, environment: str, cluster: str = "scnet") -> dict:
+        profile = self.environment(environment, cluster)
+        body = setup_shell(profile)
+        for name, path in profile.executables.items():
+            body += "printf 'SCNET_MCP_EXEC=%s\\n' " + quote(name + "=" + path) + "\n"
+        body += "printf 'SCNET_MCP_MPI=%s\\n' \"$(command -v mpirun || true)\"\n"
+        result = await self.run(cluster, body)
+        executables = {}
+        mpi = ""
+        for line in result.stdout.splitlines():
+            if line.startswith("SCNET_MCP_EXEC="):
+                name, _, path = line.removeprefix("SCNET_MCP_EXEC=").partition("=")
+                executables[name] = path
+            elif line.startswith("SCNET_MCP_MPI="):
+                mpi = line.removeprefix("SCNET_MCP_MPI=")
+        if set(executables) != set(profile.executables):
+            raise BridgeError("Environment check returned incomplete output")
+        return {"environment": environment, "executables": executables, "mpirun": mpi,
+                "checked": True, "stderr": result.stderr}
+
+    async def preview_job(self, script_path: str, environment: str, cluster: str = "scnet") -> dict:
+        profile = self.environment(environment, cluster)
+        result = await self.run(cluster, self.guard(script_path, kind="file") + 'cat -- "$target"\n')
+        if result.truncated:
+            raise BridgeError("Script exceeds the output limit; cannot inject into a truncated script")
+        return render_job(result.stdout, profile, script_path)
+
     def database(self):
         self.settings.state_dir.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.settings.state_dir / "submissions.sqlite3", timeout=10)
@@ -290,6 +334,7 @@ class Bridge:
     async def submit_job(
         self, script_path: str, request_id: str, workdir: str = ".",
         dependencies: list[str] | None = None, cluster: str = "scnet",
+        environment: str | None = None,
     ) -> dict:
         self.validate_request_id(request_id)
         chosen = self.cluster(cluster)
@@ -298,10 +343,11 @@ class Bridge:
         dependencies = [job_id(v) for v in dependencies or []]
         if len(dependencies) > 100:
             raise BridgeError("At most 100 dependency job IDs are allowed")
-        signature = hashlib.sha256(json.dumps(
-            [chosen.ssh_host, chosen.remote_root, script_path, workdir, dependencies],
-            ensure_ascii=True,
-        ).encode()).hexdigest()
+        profile = self.environment(environment, cluster) if environment is not None else None
+        specification = [chosen.ssh_host, chosen.remote_root, script_path, workdir, dependencies]
+        if profile is not None:
+            specification.append([profile.name, list(profile.setup), list(profile.executables.items())])
+        signature = hashlib.sha256(json.dumps(specification, ensure_ascii=True).encode()).hexdigest()
         connection = self.database()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -312,7 +358,7 @@ class Bridge:
                 if row["signature"] != signature:
                     raise BridgeError("request_id was already used with different submission arguments")
                 if row["state"] == "submitted":
-                    return {"job_id": row["job_id"], "request_id": request_id, "reused": True}
+                    return {"job_id": row["job_id"], "request_id": request_id, "reused": True, "environment": environment}
                 raise BridgeError(
                     f"Submission {request_id!r} is {row['state']}. It will not be submitted again. "
                     "Check list_jobs/job_details and submission_record before considering a new request_id."
@@ -327,8 +373,16 @@ class Bridge:
         body = self.guard(script_path, "script_file", "file") + self.guard(workdir, "working_dir", "directory")
         dependency = f" --dependency=afterok:{':'.join(dependencies)}" if dependencies else ""
         body += f'sbatch --parsable --chdir="$working_dir"{dependency} -- "$script_file"\n'
+        warnings = []
         try:
-            result = await self.run(cluster, body)
+            if profile is None:
+                result = await self.run(cluster, body)
+            else:
+                prepared = await self.preview_job(script_path, environment, cluster)
+                warnings = prepared["warnings"]
+                body = self.guard(workdir, "working_dir", "directory")
+                body += f'sbatch --parsable --chdir="$working_dir"{dependency}\n'
+                result = await self.run(cluster, body, input_bytes=prepared["script"].encode("utf-8"))
             lines = [line.strip() for line in result.stdout.splitlines() if re.fullmatch(r"[1-9][0-9]*(?:;[A-Za-z0-9_.-]+)?", line.strip())]
             if len(lines) != 1:
                 raise BridgeError("Submission returned an ambiguous job ID; check the queue before retrying")
@@ -337,7 +391,7 @@ class Bridge:
             self.update_submission(cluster, request_id, "uncertain", None, str(exc)[:4096])
             raise
         self.update_submission(cluster, request_id, "submitted", identifier, result.stderr[:4096])
-        return {"job_id": identifier, "request_id": request_id, "reused": False, "stderr": result.stderr}
+        return {"job_id": identifier, "request_id": request_id, "reused": False, "environment": environment, "warnings": warnings, "stderr": result.stderr}
 
     def update_submission(self, cluster, request_id, state, identifier, detail):
         connection = self.database()
@@ -355,12 +409,13 @@ class Bridge:
         result = await self.run(cluster, f'scancel --user="$(id -un)" -- {quote(identifier)}\n')
         return {"job_id": identifier, "cancel_requested": True, "stderr": result.stderr}
 
-    async def run_command(self, command: str, workdir: str = ".", cluster: str = "scnet") -> dict:
+    async def run_command(self, command: str, workdir: str = ".", cluster: str = "scnet", environment: str | None = None) -> dict:
         if not self.settings.allow_remote_commands:
             raise BridgeError("run_command is disabled in the local configuration")
         if not command.strip() or len(command) > 8192 or "\0" in command:
             raise BridgeError("Command is empty or too long")
+        setup = setup_shell(self.environment(environment, cluster)) if environment is not None else ""
         result = await self.run(
-            cluster, self.guard(workdir, kind="directory") + 'cd -- "$target"\n' + command + "\n",
+            cluster, self.guard(workdir, kind="directory") + 'cd -- "$target"\n' + setup + command + "\n",
         )
         return result.as_dict()
