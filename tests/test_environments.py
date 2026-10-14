@@ -85,6 +85,30 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(prepared["warnings"]), 1)
         self.assertIn("may override", prepared["warnings"][0])
 
+    def test_python_heredoc_assignments_do_not_warn(self):
+        script = "#!/bin/bash\npython3 - <<'PY'\nsource = 'checkpoint'\nmodule = 'data'\nPY\necho ready\n"
+        prepared = render_job(script, self.profile, 'run.slurm')
+        self.assertEqual(prepared['warnings'], [])
+        self.assertTrue(prepared['script'].endswith(script.split('\n', 1)[1]))
+
+    def test_heredoc_content_is_skipped_but_later_shell_setup_warns(self):
+        script = '#!/bin/bash\ncat <<"DATA"\nmodule purge\nsource /opt/data/env.sh\nDATA\nsource /opt/real/env.sh\n'
+        warnings = render_job(script, self.profile, 'run.slurm')['warnings']
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('lines 6;', warnings[0])
+
+    def test_tab_stripped_and_multiple_heredocs(self):
+        script = '#!/bin/bash\ncat <<-FIRST <<\'SECOND\'\n\tmodule purge\n\tFIRST\nsource /opt/data/env.sh\nSECOND\nmodule load actual\n'
+        warnings = render_job(script, self.profile, 'run.slurm')['warnings']
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('lines 7;', warnings[0])
+
+    def test_quoted_operator_and_here_string_do_not_hide_later_commands(self):
+        for command in ['printf "%s" "<<DATA"', 'cat <<< "payload"', 'echo hello # <<DATA']:
+            with self.subTest(command=command):
+                script = '#!/bin/bash\n' + command + '\nmodule purge\n'
+                self.assertEqual(len(render_job(script, self.profile, 'run.slurm')['warnings']), 1)
+
     async def test_environment_is_submitted_in_stdin_and_not_loaded_on_login_node(self):
         transport = FakeSSH([Result(self.script, "", 0), Result("45678\n", "", 0)])
         bridge = Bridge(self.settings, transport)

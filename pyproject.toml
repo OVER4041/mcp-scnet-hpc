@@ -17,4 +17,4 @@ scnet-mcp = "scnet_mcp.server:main"
 packages = ["src/scnet_mcp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src", "/tests", "/scripts", "/README.md", "/README.en.md", "/pyproject.toml", "/uv.lock", "/config.example.toml", "/codex-config.example.toml", "/install-codex.ps1", "/install-codex.sh"]
+include = ["/src", "/tests", "/scripts", "/README.md", "/README.en.md", "/CHANGELOG.md", "/pyproject.toml", "/uv.lock", "/config.example.toml", "/codex-config.example.toml", "/install-codex.ps1", "/install-codex.sh"]
