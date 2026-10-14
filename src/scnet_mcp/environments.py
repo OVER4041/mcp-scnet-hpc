@@ -8,6 +8,82 @@ from .config import BridgeError, EnvironmentProfile
 MARKER = "# SCNET_MCP_ENVIRONMENT_BEGIN"
 
 
+def _heredocs(line: str) -> list[tuple[str, bool]]:
+    """Read common Bash here-doc delimiters without treating quoted text as operators."""
+    result = []
+    quote = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if char == '\\' and quote != "'":
+            index += 2
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "\"'":
+            quote = char
+            index += 1
+            continue
+        if char == '#' and (index == 0 or line[index - 1].isspace()):
+            break
+        if line.startswith('<<<', index):
+            index += 3
+            continue
+        if not line.startswith('<<', index):
+            index += 1
+            continue
+        index += 2
+        strip_tabs = index < len(line) and line[index] == '-'
+        if strip_tabs:
+            index += 1
+        while index < len(line) and line[index].isspace():
+            index += 1
+        word = []
+        word_quote = None
+        while index < len(line):
+            char = line[index]
+            if char == '\\' and word_quote != "'" and index + 1 < len(line):
+                word.append(line[index + 1])
+                index += 2
+                continue
+            if word_quote:
+                if char == word_quote:
+                    word_quote = None
+                else:
+                    word.append(char)
+            elif char in "\"'":
+                word_quote = char
+            elif char.isspace() or char in ';|&<>':
+                break
+            else:
+                word.append(char)
+            index += 1
+        if word and not word_quote:
+            result.append((''.join(word), strip_tabs))
+    return result
+
+
+def environment_conflicts(lines: list[str], insertion: int) -> list[str]:
+    pending = []
+    conflicts = []
+    for index, line in enumerate(lines):
+        if index < insertion:
+            continue
+        if pending:
+            delimiter, strip_tabs = pending[0]
+            candidate = line.rstrip('\r\n')
+            if (candidate.lstrip('\t') if strip_tabs else candidate) == delimiter:
+                pending.pop(0)
+            continue
+        if re.match(r'^\s*(module\s+(?:purge|load|unload|use|swap|switch)\b|source\s|\.\s)', line):
+            conflicts.append(str(index + 1))
+        pending.extend(_heredocs(line))
+    return conflicts
+
+
 def setup_shell(profile: EnvironmentProfile) -> str:
     lines = [
         MARKER,
@@ -84,10 +160,7 @@ def render_job(script: str, profile: EnvironmentProfile, script_path: str) -> di
     if not has_job_name:
         header += "#SBATCH --job-name=" + shlex.quote(PurePosixPath(script_path).name) + "\n"
     body = "".join(lines[insertion:])
-    conflicts = [
-        str(index + 1) for index, line in enumerate(lines)
-        if index >= insertion and re.match(r"^\s*(module\s+(?:purge|load|unload|use|swap|switch)\b|source\s|\.\s)", line)
-    ]
+    conflicts = environment_conflicts(lines, insertion)
     warnings = []
     if conflicts:
         warnings.append(

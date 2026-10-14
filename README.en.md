@@ -49,6 +49,8 @@ Setup is inserted after the leading comments and all initial #SBATCH directives,
 
 Nounset is temporarily disabled while loading vendor environment files, then restored. Failed setup or a missing configured executable stops execution. Later module/source commands in the original script can override the selected environment; preview reports these as warnings. Prefer scripts containing only resource directives and computation commands.
 
+The warning scan skips common Bash here-document payloads, including quoted delimiters, tab-stripping <<- forms, and multiple payloads. Embedded Python assignments such as source = ... no longer trigger environment warnings. Actual later commands still report their original line numbers. This advisory scan is not a complete Bash parser or a security boundary.
+
 Profiles are trusted local configuration, not a process sandbox. Loading a setup script can perform the initialization actions defined by that script. check_environment loads the profile but never launches the configured scientific programs.
 
 The environment name and configuration participate in request deduplication. Do not reuse a request ID after changing its environment. Restart the MCP connection after configuring profiles.
@@ -60,6 +62,14 @@ Use one stable, unique request_id for each intended submission. A repeated succe
 Records are stored in state_dir/submissions.sqlite3. Requests left submitting or uncertain are not automatically retried. Inspect the queue and submission_record before using a new ID. Deduplication is scoped to the same cluster, request ID, and state database; different IDs or external submission channels can still create duplicate jobs.
 
 Completed job lookup depends on cluster accounting through sacct.
+
+## Diagnosing failed jobs
+
+job_details preserves the scheduler's recorded state. A scientific program may finish successfully before a validation or post-processing command makes the batch script fail. Check Slurm ExitCode, the earliest error, the program log, and its captured process return code together; do not replace FAILED based on a single completion string.
+
+EPW 5.8.1 uses its own completion messages rather than QE's JOB DONE. A PH time-limit stop can preserve restart data without completing the requested phase. The [qe-epw skill](https://github.com/OVER4041/qe-epw-skill) provides version-specific basic checkpoint and completion checks through check_runtime.py; downloaded logs can be checked locally without installing Codex or additional Python packages on the cluster.
+
+For MPI failures before program startup, verify the selected launcher, libraries, and scheduler integration. A single-node fallback needs validation on the allocated node and is not a general profile default. MCP does not switch MPI or resubmit jobs automatically.
 
 ## Defaults and requirements
 
@@ -80,3 +90,5 @@ Completed job lookup depends on cluster accounting through sacct.
 The live check queries the cluster and verifies temporary text and binary transfers. It removes its own test files and never submits or cancels jobs.
 
 Windows registration forwards ordinary OS environment variables needed by OpenSSH. No API token is included in the server configuration.
+
+The current offline run executed 33 unit tests: 32 passed and one Windows symlink-permission check was skipped. The MCP protocol check passed and discovered 16 tools. See [CHANGELOG.md](CHANGELOG.md) for updates.
